@@ -1,0 +1,60 @@
+appops golang ldaps bucket browser
+
+Requirements:
+Authenticate users based on LDAP group membership (VIA LDAPS connection)
+Allow authenticated users to view/browse/upload/delete files in a cloud storage bucket
+Restrict access to only "folders" in the bucket defined in LDAP attributes
+Presented via Web browser, REST API calls, and SFTP commands
+Support for multiple storage backends
+Reddis for session caching
+Run inside docker containers and deployed to K8S
+
+
+Possible framework/dependencies:
+https://github.com/joni2back/angular-filemanager
+https://github.com/kernel164/gofe
+https://godoc.org/gopkg.in/ldap.v2
+https://github.com/graymeta/stow
+https://www.codementor.io/codehakase/building-a-restful-api-with-golang-a6yivzqdo
+https://github.com/pkg/sftp
+
+
+ALTERNATIVE:
+Use Okta for LDAP integration
+Already somewhat tested with Auth0
+Either will set homedir in AD and have that ported over to Okta OR use local DB and set home directories there
+Considering static-content accounts are in GMTI domain and this most likely won't live there I'm thinking of using Okta as access but setting homedirs in a local database
+
+
+
+API Endpoints:
+/admin
+	/createUser
+		run on first login to create user and assign a default directory
+	/deleteUser
+		deletes user from local DB (Won't deauth them from remote service)
+	/editUser
+		edit metadata for user (homedir and such)
+/user
+	/list
+		list contents of current folder
+	/download
+		download list of remote files
+	/upload
+		upload list of local files
+	/delete
+		delete list of remote files
+	/edit	for metadata/file-type
+		edit metadata for single remote file
+/login
+	auths user with remote service
+/logout
+	deauths user
+/status
+	give status of local/remote services for monitoring
+
+
+Internal functions
+Auth	Remote auth service via JSON Web Tokens (auth0 for testing, okta for final)
+Storage	Standardize storage API calls between S3 & Google (hopefully won't be hard)	MAYBE local storage too... maybe
+SFTP	Translate SFTP commands to API counterparts and return results
