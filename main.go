@@ -1,50 +1,103 @@
 package main
 
 import (
-	"fmt"
+	"io"
+	"io/ioutil"
+	"log"
 	"net"
-	"os"
+
+	"github.com/pkg/sftp"
+	"golang.org/x/crypto/ssh"
 )
 
-const (
-	connHost = "localhost"
-	connPort = "3333"
-	connType = "tcp"
-)
-
+// Based on example server code from golang.org/x/crypto/ssh and server_standalone
 func main() {
-	// Listen for incoming connections.
-	l, err := net.Listen(connType, connHost+":"+connPort)
-	if err != nil {
-		fmt.Println("Error listening:", err.Error())
-		os.Exit(1)
+
+	sshConf := &ssh.ServerConfig{
+		NoClientAuth: true,
 	}
-	// Close the listener when the application closes.
-	defer l.Close()
-	fmt.Println("Listening on " + connHost + ":" + connPort)
+
+	privateBytes, err := ioutil.ReadFile("id_rsa")
+	if err != nil {
+		log.Fatal("Failed to load private key", err)
+	}
+
+	private, err := ssh.ParsePrivateKey(privateBytes)
+	if err != nil {
+		log.Fatal("Failed to parse private key", err)
+	}
+
+	sshConf.AddHostKey(private)
+
+	listener, err := net.Listen("tcp", "0.0.0.0:2022")
+	if err != nil {
+		log.Fatal("failed to listen for connection", err)
+	}
+
+	defer listener.Close()
+
+	log.Println("Listening on ", listener.Addr())
+
 	for {
 		// Listen for an incoming connection.
-		conn, err := l.Accept()
+		nConn, err := listener.Accept()
 		if err != nil {
-			fmt.Println("Error accepting: ", err.Error())
-			os.Exit(1)
+			log.Print("failed to accept incoming connection", err)
 		}
 		// Handle connections in a new goroutine.
-		go handleRequest(conn)
+		go handleRequest(nConn, sshConf)
 	}
 }
 
 // Handles incoming requests.
-func handleRequest(conn net.Conn) {
-	// Make a buffer to hold incoming data.
-	buf := make([]byte, 1024)
-	// Read the incoming connection into the buffer.
-	_, err := conn.Read(buf)
+func handleRequest(nConn net.Conn, sshConf *ssh.ServerConfig) {
+
+	sconn, chans, reqs, err := ssh.NewServerConn(nConn, sshConf)
 	if err != nil {
-		fmt.Println("Error reading:", err.Error())
+		log.Print("failed to handshake", err)
 	}
-	// Send a response back to person contacting us.
-	conn.Write([]byte("Message received."))
-	// Close the connection when you're done with it.
-	conn.Close()
+	log.Println("login detected:", sconn.User())
+
+	// The incoming Request channel must be serviced.
+	go ssh.DiscardRequests(reqs)
+
+	// Service the incoming Channel channel.
+	for newChannel := range chans {
+		// Channels have a type, depending on the application level
+		// protocol intended. In the case of an SFTP session, this is "subsystem"
+		// with a payload string of "<length=4>sftp"
+		if newChannel.ChannelType() != "session" {
+			newChannel.Reject(ssh.UnknownChannelType, "unknown channel type")
+			continue
+		}
+		channel, requests, err := newChannel.Accept()
+		if err != nil {
+			log.Fatal("could not accept channel.", err)
+		}
+
+		// Sessions have out-of-band requests such as "shell",
+		// "pty-req" and "env".  Here we handle only the
+		// "subsystem" request.
+		go func(in <-chan *ssh.Request) {
+			for req := range in {
+				ok := false
+				switch req.Type {
+				case "subsystem":
+					if string(req.Payload[4:]) == "sftp" {
+						ok = true
+					}
+				}
+				req.Reply(ok, nil)
+			}
+		}(requests)
+
+		root := sftp.InMemHandler()
+		server := sftp.NewRequestServer(channel, root)
+		if err := server.Serve(); err == io.EOF {
+			server.Close()
+			log.Print("sftp client exited session.")
+		} else if err != nil {
+			log.Fatal("sftp server completed with error:", err)
+		}
+	}
 }
